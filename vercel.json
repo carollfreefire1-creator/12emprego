@@ -1,0 +1,14 @@
+{
+  "framework": "nextjs",
+  "buildCommand": "npm run build",
+  "crons": [
+    {
+      "path": "/api/cron/expire-coupons",
+      "schedule": "0 3 * * *"
+    },
+    {
+      "path": "/api/cron/cleanup-logs",
+      "schedule": "0 4 * * 0"
+    }
+  ]
+}

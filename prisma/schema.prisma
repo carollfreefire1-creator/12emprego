@@ -1,0 +1,361 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ───────────────────────────── ENUMS ─────────────────────────────
+
+enum Role {
+  user
+  professional
+  admin
+}
+
+enum ApprovalStatus {
+  pending
+  approved
+  rejected
+}
+
+enum RequestStatus {
+  open
+  proposed
+  accepted
+  in_progress
+  completed
+  cancelled
+}
+
+enum PaymentStatus {
+  pending
+  paid
+  failed
+  refunded
+}
+
+enum CouponType {
+  percent
+  fixed
+}
+
+enum ReferralStatus {
+  pending
+  rewarded
+  expired
+}
+
+// ───────────────────────────── CORE ─────────────────────────────
+
+model User {
+  id            String   @id @default(uuid()) @db.Uuid
+  name          String
+  email         String   @unique
+  phone         String?
+  avatarUrl     String?  @map("avatar_url")
+  role          Role     @default(user)
+  blocked       Boolean  @default(false)
+  blockedReason String?  @map("blocked_reason")
+
+  // LGPD
+  consentAcceptedAt   DateTime? @map("consent_accepted_at")
+  marketingOptIn      Boolean   @default(false) @map("marketing_opt_in")
+  dataDeletionRequest DateTime? @map("data_deletion_request")
+
+  // Indicação
+  referralCode    String   @unique @default(cuid()) @map("referral_code")
+  referredById    String?  @db.Uuid @map("referred_by_id")
+  referredBy      User?    @relation("Referrals", fields: [referredById], references: [id])
+  referrals       User[]   @relation("Referrals")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  professional      Professional?
+  serviceRequests   ServiceRequest[]    @relation("ClientRequests")
+  payments          Payment[]
+  subscriptions     Subscription[]
+  adminLogs         AdminLog[]
+  pushSubscriptions PushSubscription[]
+  notifications     Notification[]
+  couponRedemptions CouponRedemption[]
+  referralRewardsGiven    ReferralReward[] @relation("ReferrerRewards")
+  referralRewardsReceived ReferralReward[] @relation("ReferredRewards")
+  requestLogs       RequestLog[]
+  consentLogs       ConsentLog[]
+
+  @@map("users")
+  @@index([role])
+  @@index([referredById])
+}
+
+model Professional {
+  id             String         @id @default(uuid()) @db.Uuid
+  userId         String         @unique @db.Uuid @map("user_id")
+  user           User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  bio            String?
+  document       String?
+  approvalStatus ApprovalStatus @default(pending) @map("approval_status")
+  approvedAt     DateTime?      @map("approved_at")
+  rejectedReason String?        @map("rejected_reason")
+  verified       Boolean        @default(false)
+  rating         Decimal        @default(0) @db.Decimal(3, 2)
+  completedJobs  Int            @default(0) @map("completed_jobs")
+
+  categories ProfessionalCategory[]
+  proposals  Proposal[]
+  requests   ServiceRequest[] @relation("ProfessionalRequests")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("professionals")
+  @@index([approvalStatus])
+}
+
+model Category {
+  id         String   @id @default(uuid()) @db.Uuid
+  name       String
+  slug       String   @unique
+  icon       String?
+  active     Boolean  @default(true)
+  orderIndex Int      @default(0) @map("order_index")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  professionals    ProfessionalCategory[]
+  serviceRequests  ServiceRequest[]
+
+  @@map("categories")
+  @@index([active])
+}
+
+model ProfessionalCategory {
+  professionalId String       @db.Uuid @map("professional_id")
+  categoryId     String       @db.Uuid @map("category_id")
+  professional   Professional @relation(fields: [professionalId], references: [id], onDelete: Cascade)
+  category       Category     @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  @@id([professionalId, categoryId])
+  @@map("professional_categories")
+}
+
+model ServiceRequest {
+  id             String         @id @default(uuid()) @db.Uuid
+  clientId       String         @db.Uuid @map("client_id")
+  client         User           @relation("ClientRequests", fields: [clientId], references: [id])
+  professionalId String?        @db.Uuid @map("professional_id")
+  professional   Professional?  @relation("ProfessionalRequests", fields: [professionalId], references: [id])
+  categoryId     String         @db.Uuid @map("category_id")
+  category       Category       @relation(fields: [categoryId], references: [id])
+  title          String
+  description    String
+  address        String?
+  status         RequestStatus  @default(open)
+  budgetCents    Int?           @map("budget_cents")
+  createdAt      DateTime       @default(now()) @map("created_at")
+  updatedAt      DateTime       @updatedAt @map("updated_at")
+
+  proposals Proposal[]
+  payments  Payment[]
+
+  @@map("service_requests")
+  @@index([status])
+  @@index([clientId])
+  @@index([professionalId])
+}
+
+model Proposal {
+  id             String       @id @default(uuid()) @db.Uuid
+  requestId      String       @db.Uuid @map("request_id")
+  request        ServiceRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  professionalId String       @db.Uuid @map("professional_id")
+  professional   Professional @relation(fields: [professionalId], references: [id], onDelete: Cascade)
+  priceCents     Int          @map("price_cents")
+  message        String?
+  accepted       Boolean      @default(false)
+  createdAt      DateTime     @default(now()) @map("created_at")
+
+  @@map("proposals")
+  @@index([requestId])
+}
+
+// ───────────────────────────── PLANOS / PAGAMENTOS ─────────────────────────────
+
+model Plan {
+  id          String   @id @default(uuid()) @db.Uuid
+  name        String
+  priceCents  Int      @map("price_cents")
+  interval    String   @default("month")
+  features    Json     @default("[]")
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  subscriptions Subscription[]
+
+  @@map("plans")
+}
+
+model Subscription {
+  id                String   @id @default(uuid()) @db.Uuid
+  userId            String   @db.Uuid @map("user_id")
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  planId            String   @db.Uuid @map("plan_id")
+  plan              Plan     @relation(fields: [planId], references: [id])
+  status            String   @default("active")
+  currentPeriodEnd  DateTime? @map("current_period_end")
+  createdAt         DateTime @default(now()) @map("created_at")
+
+  @@map("subscriptions")
+  @@index([userId])
+}
+
+model Payment {
+  id          String        @id @default(uuid()) @db.Uuid
+  userId      String        @db.Uuid @map("user_id")
+  user        User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  requestId   String?       @db.Uuid @map("request_id")
+  request     ServiceRequest? @relation(fields: [requestId], references: [id], onDelete: SetNull)
+  amountCents Int           @map("amount_cents")
+  discountCents Int         @default(0) @map("discount_cents")
+  couponId    String?       @db.Uuid @map("coupon_id")
+  coupon      Coupon?       @relation(fields: [couponId], references: [id])
+  status      PaymentStatus @default(pending)
+  method      String?
+  gatewayId   String?       @map("gateway_id")
+  createdAt   DateTime      @default(now()) @map("created_at")
+
+  @@map("payments")
+  @@index([status])
+  @@index([createdAt(sort: Desc)])
+}
+
+// ───────────────────────────── CUPONS ─────────────────────────────
+
+model Coupon {
+  id           String     @id @default(uuid()) @db.Uuid
+  code         String     @unique
+  type         CouponType
+  value        Int // percentual (1-100) ou centavos, conforme `type`
+  maxUses      Int?       @map("max_uses")
+  usedCount    Int        @default(0) @map("used_count")
+  minAmountCents Int?     @map("min_amount_cents")
+  active       Boolean    @default(true)
+  startsAt     DateTime?  @map("starts_at")
+  expiresAt    DateTime?  @map("expires_at")
+  createdAt    DateTime   @default(now()) @map("created_at")
+
+  redemptions CouponRedemption[]
+  payments    Payment[]
+
+  @@map("coupons")
+  @@index([active])
+  @@index([code])
+}
+
+model CouponRedemption {
+  id        String   @id @default(uuid()) @db.Uuid
+  couponId  String   @db.Uuid @map("coupon_id")
+  coupon    Coupon   @relation(fields: [couponId], references: [id], onDelete: Cascade)
+  userId    String   @db.Uuid @map("user_id")
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("coupon_redemptions")
+  @@unique([couponId, userId])
+}
+
+// ───────────────────────────── INDICAÇÃO (REFERRAL) ─────────────────────────────
+
+model ReferralReward {
+  id           String         @id @default(uuid()) @db.Uuid
+  referrerId   String         @db.Uuid @map("referrer_id")
+  referrer     User           @relation("ReferrerRewards", fields: [referrerId], references: [id], onDelete: Cascade)
+  referredId   String         @db.Uuid @map("referred_id")
+  referred     User           @relation("ReferredRewards", fields: [referredId], references: [id], onDelete: Cascade)
+  status       ReferralStatus @default(pending)
+  rewardCents  Int            @default(2000) @map("reward_cents")
+  rewardedAt   DateTime?      @map("rewarded_at")
+  createdAt    DateTime       @default(now()) @map("created_at")
+
+  @@map("referral_rewards")
+  @@unique([referrerId, referredId])
+  @@index([status])
+}
+
+// ───────────────────────────── PUSH NOTIFICATIONS ─────────────────────────────
+
+model PushSubscription {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @db.Uuid @map("user_id")
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  endpoint  String   @unique
+  p256dh    String
+  auth      String
+  userAgent String?  @map("user_agent")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("push_subscriptions")
+  @@index([userId])
+}
+
+model Notification {
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String    @db.Uuid @map("user_id")
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title     String
+  body      String
+  url       String?
+  read      Boolean   @default(false)
+  sentAt    DateTime? @map("sent_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  @@map("notifications")
+  @@index([userId, read])
+}
+
+// ───────────────────────────── LOGS / SEGURANÇA ─────────────────────────────
+
+model AdminLog {
+  id         String   @id @default(uuid()) @db.Uuid
+  adminId    String   @db.Uuid @map("admin_id")
+  admin      User     @relation(fields: [adminId], references: [id])
+  action     String
+  targetType String   @map("target_type")
+  targetId   String?  @db.Uuid @map("target_id")
+  details    Json?
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@map("admin_logs")
+  @@index([createdAt(sort: Desc)])
+}
+
+model RequestLog {
+  id         String   @id @default(uuid()) @db.Uuid
+  userId     String?  @db.Uuid @map("user_id")
+  user       User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  ip         String
+  path       String
+  method     String
+  statusCode Int?     @map("status_code")
+  userAgent  String?  @map("user_agent")
+  flagged    Boolean  @default(false) // marcado pelo rate-limit / anti-spam
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@map("request_logs")
+  @@index([ip, createdAt])
+  @@index([flagged])
+}
+
+model ConsentLog {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @db.Uuid @map("user_id")
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  action    String // "accept_terms" | "accept_marketing" | "revoke_marketing" | "data_export" | "data_deletion"
+  ip        String?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("consent_logs")
+  @@index([userId])
+}
